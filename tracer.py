@@ -10,6 +10,10 @@ import datetime
 import multiprocessing as multi
 import ctypes
 
+# Additional libraries for better python3 compatibility
+from matplotlib.pyplot import imread
+from PIL import Image
+
 import logging
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -30,6 +34,8 @@ import curses
 #enums
 METH_LEAPFROG = 0
 METH_RK4 = 1
+METH_VERLET = 2
+METH_RUTH = 3
 
 
 #rough option parsing
@@ -133,7 +139,7 @@ cfp.read(SCENE_FNAME)
 FOGSKIP = 1
 
 
-METHOD = METH_RK4
+METHOD = METH_RUTH
 
 #enums to avoid per-iteration string comparisons
 
@@ -313,7 +319,7 @@ def rgbtosrgb(arr):
     arr[mask] **= 1/2.4
     arr[mask] *= 1.055
     arr[mask] -= 0.055
-    arr[-mask] *= 12.92
+    arr[~mask] *= 12.92
 
 
 # convert from srgb to linear rgb
@@ -323,31 +329,32 @@ def srgbtorgb(arr):
     arr[mask] += 0.055
     arr[mask] /= 1.055
     arr[mask] **= 2.4
-    arr[-mask] /= 12.92
+    arr[~mask] /= 12.92
 
 
 logger.debug("Loading textures...")
 if SKY_TEXTURE == 'texture':
-    texarr_sky = spm.imread('textures/bgedit.jpg')
-    # must convert to float here so we can work in linear colour
-    texarr_sky = texarr_sky.astype(float)
-    texarr_sky /= 255.0
+    # imread imported from matplotlib.pyplot instead of scipy.misc
+    texarr_sky = imread('textures/bgedit.jpg')
+    texarr_sky = np.copy(texarr_sky)
+    texarr_sky = texarr_sky / 255.0
     if SRGBIN:
         # must do this before resizing to get correct results
         srgbtorgb(texarr_sky)
     if not LOFI:
         #   maybe doing this manually and then loading is better.
         logger.debug("(zooming sky texture...)")
-        texarr_sky = spm.imresize(texarr_sky,2.0,interp='bicubic')
-        # imresize converts back to uint8 for whatever reason
-        texarr_sky = texarr_sky.astype(float)
-        texarr_sky /= 255.0
+        # Converting to format required by PIL
+        texarr_sky = Image.fromarray((texarr_sky * 255).astype(np.uint8))
+        # Image.resize is used to replace deprecated spm.imresize
+        texarr_sky = np.array(texarr_sky.resize((2*np.size(texarr_sky)[0], 2*np.size(texarr_sky)[1]), resample=Image.LANCZOS))
+        texarr_sky = texarr_sky / 255.0
 
 texarr_disk = None
 if DISK_TEXTURE == 'texture':
-    texarr_disk = spm.imread('textures/adisk.jpg')
+    texarr_disk = imread('textures/adisk.jpg')
 if DISK_TEXTURE == 'test':
-    texarr_disk = spm.imread('textures/adisktest.jpg')
+    texarr_disk = imread('textures/adisktest.jpg')
 if texarr_disk is not None:
     # must convert to float here so we can work in linear colour
     texarr_disk = texarr_disk.astype(float)
@@ -436,6 +443,13 @@ def RK4f(y,h2):
     f = np.zeros(y.shape)
     f[:,0:3] = y[:,3:6]
     f[:,3:6] = - 1.5 * h2 * y[:,0:3] / np.power(sqrnorm(y[:,0:3]),2.5)[:,np.newaxis]
+    return f
+
+# slightly modified potential function as positions and velocities are
+# subject to separate iteration schemes when using symplectic methods.
+def symplec_f(y,h2):
+    f = np.zeros(y.shape)
+    f = - 1.5 * h2 * y / np.power(sqrnorm(y),2.5)[:,np.newaxis]
     return f
 
 
@@ -723,6 +737,30 @@ def raytrace_schedule(i,schedule,total_shared,q): # this is the function running
                     velocity += increment[:,3:6]
 
                 point += increment[:,0:3]
+                
+            elif METHOD == METH_VERLET:
+                if DISTORT:
+                    #simple step size control
+                    verletstep = STEP
+                    
+                    # Velocity Verlet method
+                    f_t = symplec_f( point, h2)
+                    point += velocity*verletstep + 0.5*f_t*verletstep**2
+                    velocity += 0.5*( f_t + symplec_f( point, h2) )*verletstep
+                
+            elif METHOD == METH_RUTH:
+                if DISTORT:
+                    #simple step size control
+                    ruthstep = STEP
+
+                    # Ruth's method
+                    velocity += ((np.cbrt(2) + 1/np.cbrt(2) - 1)/6. + 0.5)*ruthstep*symplec_f( point, h2)
+                    point += ((np.cbrt(2) + 1/np.cbrt(2) - 1)/3. + 1)*ruthstep*velocity
+                    velocity -= ((np.cbrt(2) + 1/np.cbrt(2) - 1)/6.)*ruthstep*symplec_f( point, h2)
+                    point -= (2*(np.cbrt(2) + 1/np.cbrt(2) - 1)/3. + 1)*ruthstep*velocity
+                    velocity -= ((np.cbrt(2) + 1/np.cbrt(2) - 1)/6.)*ruthstep*symplec_f( point, h2)
+                    point += ((np.cbrt(2) + 1/np.cbrt(2) - 1)/3. + 1)*ruthstep*velocity
+                    velocity += ((np.cbrt(2) + 1/np.cbrt(2) - 1)/6. + 0.5)*ruthstep*symplec_f( point, h2)
 
 
             #useful precalcs

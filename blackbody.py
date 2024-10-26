@@ -3,6 +3,9 @@
 import numpy as np
 import scipy.misc as spm
 
+# Needed for better python3 compatibility
+from matplotlib.pyplot import imread
+
 #accretion disk log temperature profile (R^{-3/4})
 LOGSHIFT = 0.823959216501 # 3/4 log(3)
 def disktemp(sqrR,logT0):
@@ -25,7 +28,7 @@ def intensity(T):
     return 1./( np.exp(29622.4 / T.clip(1.)) - 1)
 
 
-ramp = spm.imread('data/colourtemp.jpg')[0,:,:]/255.
+ramp = imread('data/colourtemp.jpg')[0,:,:]/255.
 rampsz = ramp.shape[0]
 
 
